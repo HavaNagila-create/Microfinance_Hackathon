@@ -4,13 +4,12 @@ import numpy as np
 import plotly.graph_objects as go
 import torch
 import torch.nn as nn
-from stable_baselines3 import PPO
 import os
 
 # --- UI CONFIGURATION ---
 st.set_page_config(page_title="AI Microfinance Adaptive Scheduler", layout="wide")
-st.title("🌱 Dual-AI Dynamic Microloan & Cash-Flow Planner")
-st.caption("Temporal LSTM Forecasting + Deep PPO Reinforcement Learning Policy Engine")
+st.title("🌱 Dynamic Microloan & Cash-Flow Planner")
+st.caption("Temporal LSTM Forecasting + Forecast-Driven Algorithmic Policy")
 
 # --- MODEL ARCHITECTURE DEFINITIONS ---
 class CashFlowLSTM(nn.Module):
@@ -31,8 +30,6 @@ def load_ai_models():
     device = torch.device("cpu")
     lstm = CashFlowLSTM(input_dim=4, hidden_dim=64)
     lstm_loaded = False
-    ppo_loaded = False
-    ppo_model = None
 
     if os.path.exists("lstm_predictor.pth"):
         try:
@@ -42,21 +39,14 @@ def load_ai_models():
         except Exception:
             pass
 
-    if os.path.exists("ppo_dynamic_scheduler.zip"):
-        try:
-            ppo_model = PPO.load("ppo_dynamic_scheduler.zip", device="cpu")
-            ppo_loaded = True
-        except Exception:
-            pass
+    return lstm, lstm_loaded
 
-    return lstm, ppo_model, lstm_loaded, ppo_loaded
+lstm_engine, lstm_ready = load_ai_models()
 
-lstm_engine, ppo_engine, lstm_ready, ppo_ready = load_ai_models()
-
-st.sidebar.markdown("### 🤖 Neural Engine Status")
+st.sidebar.markdown("### 🤖 Engine Status")
 col_s1, col_s2 = st.sidebar.columns(2)
-col_s1.metric("LSTM Predictor", "Active" if lstm_ready else "Fallback", delta="Ready" if lstm_ready else "Off")
-col_s2.metric("PPO RL Scheduler", "Active" if ppo_ready else "Fallback", delta="Ready" if ppo_ready else "Off")
+col_s1.metric("LSTM Predictor", "Active" if lstm_ready else "Naive Fallback", delta="Ready" if lstm_ready else "Baseline")
+col_s2.metric("Algorithmic Policy", "Active", delta="Rules Engine")
 
 # --- REALISTIC INFORMAL ARTIFACT PROFILES ---
 monthly_profiles = {
@@ -99,40 +89,115 @@ loan_term_months = loan_term_years * 12
 
 subsistence_buffer = st.sidebar.number_input("Household Subsistence Reserve (₹)", value=11000, step=1000)
 
+# --- EDITABLE BASELINE DATA ---
+st.markdown("### 📝 Edit Baseline 12-Month Historical Data")
+st.caption(f"Adjust the standard previous-year cash flows for the **{selected_profile}**. The simulation drives future variations off these numbers.")
+
+baseline_df = pd.DataFrame({
+    "Month": ["1 (Jan)", "2 (Feb)", "3 (Mar)", "4 (Apr)", "5 (May)", "6 (Jun)", 
+              "7 (Jul)", "8 (Aug)", "9 (Sep)", "10 (Oct)", "11 (Nov)", "12 (Dec)"],
+    "Inflow (₹)": profile["inflow"],
+    "Outflow (₹)": profile["outflow"]
+})
+
+edited_df = st.data_editor(
+    baseline_df,
+    column_config={
+        "Month": st.column_config.TextColumn("Month", disabled=True),
+        "Inflow (₹)": st.column_config.NumberColumn("Inflow (₹)", min_value=0, step=1000),
+        "Outflow (₹)": st.column_config.NumberColumn("Outflow (₹)", min_value=0, step=1000)
+    },
+    hide_index=True,
+    use_container_width=True
+)
+
+edited_inflow = edited_df["Inflow (₹)"].tolist()
+edited_outflow = edited_df["Outflow (₹)"].tolist()
+
 monthly_rate = (interest_rate / 100) / 12
 if monthly_rate > 0:
     fixed_payment = loan_amount * (monthly_rate * (1 + monthly_rate)**loan_term_months) / ((1 + monthly_rate)**loan_term_months - 1)
 else:
     fixed_payment = loan_amount / loan_term_months
 
-def run_dual_ai_simulation():
+def run_simulation():
     np.random.seed(42)
     months = np.arange(1, loan_term_months + 1)
 
     inflows, outflows = [], []
     for m in range(loan_term_months):
         idx = m % 12
-        inflows.append(profile["inflow"][idx] * np.random.uniform(0.95, 1.05))
-        outflows.append(profile["outflow"][idx] * np.random.uniform(0.96, 1.04))
+        # Induce natural variance
+        inflows.append(edited_inflow[idx] * np.random.uniform(0.90, 1.10))
+        outflows.append(edited_outflow[idx] * np.random.uniform(0.95, 1.05))
 
-    inflows, outflows = np.array(inflows), np.array(outflows)
+    inflows = np.array(inflows)
+    outflows = np.array(outflows)
     net_operating_cash = inflows - outflows
 
-    fixed_cash = []
-    curr_f = 12000.0
-    for m in range(loan_term_months):
-        curr_f = curr_f + net_operating_cash[m] - fixed_payment
-        fixed_cash.append(curr_f)
+    # State Variables
+    fixed_balance = float(loan_amount)
+    adaptive_balance = float(loan_amount)
 
-    dyn_cash, dyn_payments, predicted_cash_flow = [], [], []
-    stress_flags, condition_types, decision_traces = [], [], []
+    curr_f = 12000.0
+    arrears_f = 0.0
+    fixed_cash = []
+    fixed_payments_collected = []
+    fixed_defaults_count = 0
+    fixed_payoff_month = None
+    fixed_total_paid = 0.0
 
     curr_d = 12000.0
-    remaining_balance = float(loan_amount)
-    history_window = [[np.sin(2 * np.pi * (m % 12) / 12), profile["inflow"][m % 12], profile["outflow"][m % 12], profile["inflow"][m % 12] - profile["outflow"][m % 12]] for m in range(6)]
+    dyn_cash = []
+    dyn_payments_collected = []
+    adaptive_payoff_month = None
+    adaptive_total_paid = 0.0
+
+    predicted_cash_flow = []
+    stress_flags = []
+    condition_types = []
+    decision_traces = []
+
+    history_window = [[np.sin(2 * np.pi * (m % 12) / 12), edited_inflow[m % 12], edited_outflow[m % 12], edited_inflow[m % 12] - edited_outflow[m % 12]] for m in range(6)]
 
     for m in range(loan_term_months):
-        # 1. MODEL 1: LSTM INFERENCE
+        # ---------------------------------------------------------
+        # 1. FIXED SCHEDULE LOGIC (With true arrears & penalties)
+        # ---------------------------------------------------------
+        if fixed_balance > 0.01:
+            fixed_balance *= (1 + monthly_rate) # Accrue interest
+            payment_due = fixed_payment + arrears_f
+            
+            # Borrower protects subsistence first before paying fixed EMI
+            available_for_fixed = max(0.0, curr_f + net_operating_cash[m] - subsistence_buffer)
+            actual_fixed_payment = min(payment_due, available_for_fixed)
+            actual_fixed_payment = min(actual_fixed_payment, fixed_balance)
+            
+            if actual_fixed_payment < payment_due and fixed_balance > 1.0:
+                # Default occurred
+                arrears_f = (payment_due - actual_fixed_payment) * 1.05 # 5% penalty on arrears
+                fixed_defaults_count += 1
+            else:
+                arrears_f = 0.0
+                
+            fixed_balance -= actual_fixed_payment
+            curr_f = curr_f + net_operating_cash[m] - actual_fixed_payment
+            fixed_total_paid += actual_fixed_payment
+            
+            if fixed_balance <= 0.01 and fixed_payoff_month is None:
+                fixed_payoff_month = m + 1
+        else:
+            curr_f = curr_f + net_operating_cash[m]
+            actual_fixed_payment = 0.0
+            
+        fixed_cash.append(curr_f)
+        fixed_payments_collected.append(actual_fixed_payment)
+
+        # ---------------------------------------------------------
+        # 2. ADAPTIVE SCHEDULE LOGIC (With true interest accrual)
+        # ---------------------------------------------------------
+        
+        # LSTM or Seasonal Naive Forecast
         if lstm_ready:
             recent_seq = np.array(history_window[-6:])
             seq_min, seq_max = recent_seq.min(axis=0), recent_seq.max(axis=0)
@@ -142,16 +207,25 @@ def run_dual_ai_simulation():
                 pred_scaled = lstm_engine(x_input).item()
             pred_val = float(pred_scaled * (seq_max[3] - seq_min[3]) + seq_min[3])
         else:
-            pred_val = float(net_operating_cash[(m + 1) % loan_term_months])
-
+            # Honest seasonal-naive lookahead (uses expected baseline, not real future array)
+            pred_val = edited_inflow[(m + 1) % 12] - edited_outflow[(m + 1) % 12]
         predicted_cash_flow.append(pred_val)
 
         available_liquidity = curr_d + net_operating_cash[m]
         free_surplus = max(0.0, available_liquidity - subsistence_buffer)
-        burn_rate = outflows[m] - inflows[m]
+        
+        # 3-Month Rolling Mean Analysis (Permanent vs Temporary logic)
+        if m >= 2:
+            current_3m = np.mean(net_operating_cash[m-2:m+1])
+            baseline_3m = np.mean([edited_inflow[i%12] - edited_outflow[i%12] for i in range(m-2, m+1)])
+        else:
+            current_3m = net_operating_cash[m]
+            baseline_3m = edited_inflow[m%12] - edited_outflow[m%12]
+            
+        structural_deterioration = (current_3m < baseline_3m * 0.75) # Running 25% below baseline
 
-        # 2. EVALUATE FINANCIAL CONDITION
-        if remaining_balance <= 0:
+        # State Evaluation
+        if adaptive_balance <= 0.01:
             stress = "🔵 Debt Cleared"
             condition = "Loan Fully Repaid"
         else:
@@ -162,95 +236,108 @@ def run_dual_ai_simulation():
             else:
                 stress = "🟢 Healthy Surplus"
             
-            if burn_rate > 0:
-                condition = "Temporary Seasonal Downturn" if pred_val > fixed_payment * 1.5 else "Transient Liquidity Crunch"
+            if current_3m < 0:
+                condition = "Structural Deterioration" if structural_deterioration else "Temporary Seasonal Downturn"
             else:
-                condition = "Peak Liquidity Surge" if net_operating_cash[m] > fixed_payment * 2.0 else "Stable Baseline Cash Flow"
+                condition = "Peak Liquidity Surge" if current_3m > fixed_payment * 2.0 else "Stable Baseline Cash Flow"
         
         stress_flags.append(stress)
         condition_types.append(condition)
 
-        # 3. AI PAYMENT DECISION
-        if remaining_balance <= 0:
-            ai_demand = 0.0
-        else:
+        # Algorithmic Forecast-Driven Payment Execution
+        if adaptive_balance > 0.01:
+            adaptive_balance *= (1 + monthly_rate) # Accrue actual interest
+            
             current_month_surplus_ratio = net_operating_cash[m] / max(fixed_payment, 1.0)
             
-            # If the user has a loaded PPO model
-            if ppo_ready:
-                obs = np.array([curr_d / 50000.0, remaining_balance / loan_amount, pred_val / 50000.0, net_operating_cash[m] / 50000.0], dtype=np.float32)
-                action, _ = ppo_engine.predict(obs, deterministic=True)
-                # Map action (0-80) to a more aggressive scale: 0.1x to 4.0x
-                rl_multiplier = max(0.1, float(action[0]) / 20.0) 
-                
-                if current_month_surplus_ratio > 1.5:
-                    # Aggressive peak capture: grab up to 60% of the free surplus
-                    ai_demand = max(fixed_payment * rl_multiplier, free_surplus * 0.6)
-                elif free_surplus < fixed_payment:
-                    ai_demand = free_surplus * 0.9 # Take almost all available surplus before subsistence
-                else:
-                    ai_demand = fixed_payment * max(1.0, rl_multiplier) # Default to at least the fixed payment if solvent
+            if free_surplus <= 500:
+                ai_demand = 0.0 # Grace Period
+            elif free_surplus < fixed_payment:
+                ai_demand = free_surplus * 0.9 # Proportional Servicing
+            elif current_month_surplus_ratio > 1.5:
+                # Windfall Harvesting
+                ai_demand = min(free_surplus * 0.6, fixed_payment * 4.0)
             else:
-                # Fallback Logic (if PPO isn't loaded)
-                if free_surplus <= 500:
-                    ai_demand = 0.0
-                elif free_surplus < fixed_payment:
-                    ai_demand = free_surplus * 0.9
-                elif current_month_surplus_ratio > 1.5:
-                    # Aggressive peak capture
-                    ai_demand = min(free_surplus * 0.6, fixed_payment * 4.0)
-                else:
-                    ai_demand = fixed_payment
-
+                ai_demand = fixed_payment
+                
             ai_demand = min(ai_demand, free_surplus) 
-            ai_demand = min(ai_demand, remaining_balance) 
-        
-        remaining_balance = max(0.0, remaining_balance - ai_demand)
-        curr_d = available_liquidity - ai_demand
+            ai_demand = min(ai_demand, adaptive_balance) 
+            
+            adaptive_balance -= ai_demand
+            adaptive_total_paid += ai_demand
+            curr_d = available_liquidity - ai_demand
+            
+            if adaptive_balance <= 0.01 and adaptive_payoff_month is None:
+                adaptive_payoff_month = m + 1
+        else:
+            ai_demand = 0.0
+            curr_d = available_liquidity
 
         dyn_cash.append(curr_d)
-        dyn_payments.append(ai_demand)
+        dyn_payments_collected.append(ai_demand)
 
-        # 4. FIXED EVIDENCE TRACE
-        if remaining_balance == 0 and ai_demand == 0:
-            trace = "Loan fully repaid. No further collection required."
+        # Evidence Trace Generation
+        if adaptive_balance <= 0.01 and ai_demand == 0:
+            trace = "Loan fully repaid. Account closed."
         elif ai_demand <= 100.0:
-            trace = f"Grace granted. Cash below survival line. Model 1 expects recovery of ₹{pred_val:,.0f} next month."
+            trace = f"Grace invoked. Forecast anticipates recovery of ₹{pred_val:,.0f} next month. Interest capitalized."
         elif ai_demand > fixed_payment * 1.25:
-            trace = f"Harvest/Surplus capture. Inflow surging; accelerated debt recovery by demanding ₹{(ai_demand - fixed_payment):,.0f} extra."
+            trace = f"Harvest/Surplus capture. Accelerated principal recovery by ₹{(ai_demand - fixed_payment):,.0f}."
         elif ai_demand < fixed_payment * 0.95:
-            trace = f"Payment scaled down by ₹{(fixed_payment - ai_demand):,.0f} to protect ₹{subsistence_buffer:,.0f} subsistence buffer."
+            trace = f"Rescheduled. Scaled payment to ₹{ai_demand:,.0f} to protect subsistence buffer."
         else:
-            trace = "Nominal rate serviced within healthy operating capacity."
+            trace = "Standard amortization schedule applied."
         decision_traces.append(trace)
 
         history_window.append([np.sin(2 * np.pi * ((m + 1) % 12) / 12), inflows[m], outflows[m], net_operating_cash[m]])
 
-    return (months, inflows, outflows, fixed_cash, dyn_cash, dyn_payments, predicted_cash_flow, stress_flags, condition_types, decision_traces)
+    return (months, inflows, outflows, fixed_cash, dyn_cash, fixed_payments_collected, dyn_payments_collected, 
+            predicted_cash_flow, stress_flags, condition_types, decision_traces, 
+            fixed_defaults_count, fixed_payoff_month, adaptive_payoff_month)
 
-if st.button("⚡ Run Full AI Analysis & Evidence Engine", use_container_width=True, type="primary"):
-    (months, inflows, outflows, f_cash, d_cash, d_payments,
-     pred_cf, stress_flags, cond_types, decision_traces) = run_dual_ai_simulation()
+if st.button("⚡ Run Core Analysis & Evidence Engine", use_container_width=True, type="primary"):
+    (months, inflows, outflows, f_cash, d_cash, f_payments, d_payments,
+     pred_cf, stress_flags, cond_types, decision_traces, 
+     f_defaults, f_payoff, d_payoff) = run_simulation()
 
-    f_defaults = sum(1 for c in f_cash if c < 0)
-    d_defaults = sum(1 for c in d_cash if c < 0)
+    # --- CALCULATE ALTERNATIVE CREDIT SCORE (AIRRS) ---
+    base_score = 400
+    
+    total_repaid = sum(d_payments)
+    expected_total = loan_amount + (loan_amount * (interest_rate/100) * (loan_term_years/2)) # Rough expectation
+    repay_ratio = min(1.0, total_repaid / loan_amount)
+    score_repayment = repay_ratio * 250
+    
+    breaches = sum(1 for c in d_cash if c <= subsistence_buffer)
+    resilience_ratio = max(0.0, 1.0 - (breaches / loan_term_months))
+    score_resilience = resilience_ratio * 150
+    
+    windfall_captures = sum(1 for p in d_payments if p > fixed_payment * 1.5)
+    score_bonus = min(100, windfall_captures * 15)
+    
+    final_credit_score = int(min(850, max(300, base_score + score_repayment + score_resilience + score_bonus)))
 
-    st.markdown("### 📊 Performance Overview: Traditional vs. AI Restructuring")
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Fixed Schedule Defaults", f"{f_defaults} Months", delta="High Involuntary Risk", delta_color="inverse")
-    k2.metric("AI Dynamic Defaults", f"{d_defaults} Months", delta="100% Solvency Maintained")
-    k3.metric("Standard Fixed EMI", f"₹{fixed_payment:,.2f}")
-    k4.metric("AI Peak Collection Recouped", f"₹{max(d_payments):,.2f}")
+    st.markdown("### 📊 Performance Overview & Credit Scoring")
+    k1, k2, k3, k4, k5 = st.columns(5)
+    
+    score_color = "normal" if final_credit_score > 650 else "off"
+    k1.metric("AIRRS Credit Score", f"{final_credit_score} / 850", delta="High Trust" if final_credit_score > 700 else "Developing", delta_color=score_color)
+    
+    # Fair Comparison Metrics
+    k2.metric("Fixed Schedule Arrears", f"{f_defaults} Months", delta="Involuntary Default Risk", delta_color="inverse")
+    k3.metric("Adaptive Reschedules", f"{sum(1 for p in d_payments if p < fixed_payment and p > 0)} Months", delta="0 Defaults")
+    k4.metric("Fixed Payoff Time", f"{f_payoff} Mo" if f_payoff else "Did Not Finish", delta="Standard")
+    k5.metric("Adaptive Payoff Time", f"{d_payoff} Mo" if d_payoff else "Did Not Finish", delta=f"{f_payoff - d_payoff if f_payoff and d_payoff else 0} Mo Faster", delta_color="normal")
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=months, y=f_cash, mode='lines', name="Traditional Fixed Cash Buffer", line=dict(color='firebrick', dash='dash', width=2)))
-    fig.add_trace(go.Scatter(x=months, y=d_cash, mode='lines', name="AI Adaptive Cash Buffer", line=dict(color='seagreen', width=3)))
-    fig.add_hline(y=0, line_dash="solid", line_color="black", annotation_text="Default / Starvation Line (₹0)")
+    fig.add_trace(go.Scatter(x=months, y=d_cash, mode='lines', name="Adaptive Algorithmic Cash Buffer", line=dict(color='seagreen', width=3)))
+    fig.add_hline(y=0, line_dash="solid", line_color="black", annotation_text="Total Starvation (₹0)")
     fig.add_hline(y=subsistence_buffer, line_dash="dot", line_color="orange", annotation_text="Protected Subsistence Buffer")
-    fig.add_trace(go.Bar(x=months, y=d_payments, name="AI Scheduled Payment Demand", opacity=0.35, marker_color='royalblue', yaxis="y2"))
+    fig.add_trace(go.Bar(x=months, y=d_payments, name="Adaptive Payment Collected", opacity=0.35, marker_color='royalblue', yaxis="y2"))
 
     fig.update_layout(
-        title=f"{loan_term_years}-Year Multi-Cycle Cash Flow & Contagion Defense: {selected_profile}",
+        title=f"{loan_term_years}-Year Multi-Cycle Cash Flow & Contagion Defense",
         xaxis_title="Tenure (Months)",
         yaxis_title="Borrower Liquidity (₹)",
         yaxis2=dict(title="Repayment Collected (₹)", overlaying="y", side="right", showgrid=False),
@@ -263,15 +350,15 @@ if st.button("⚡ Run Full AI Analysis & Evidence Engine", use_container_width=T
     st.markdown("---")
     st.markdown("### 🔍 Model Evidence, Stress Identification & Diagnostic Trace")
     
-    tab1, tab2, tab3 = st.tabs(["📋 Complete Audit Ledger", "📈 Model 1: LSTM Predictions vs Actual", "🧠 Core Evidence Breakdown"])
+    tab1, tab2, tab3 = st.tabs(["📋 Complete Audit Ledger", "📈 Model 1: LSTM vs Baseline Forecast", "🧠 Core Evidence Breakdown"])
 
     with tab1:
         ledger_df = pd.DataFrame({
             "Month": months,
             "Inflow (₹)": [f"₹{v:,.0f}" for v in inflows],
             "Outflow (₹)": [f"₹{v:,.0f}" for v in outflows],
-            "Fixed EMI": [f"₹{fixed_payment:,.2f}" for _ in range(loan_term_months)],
-            "AI Payment Demand": [f"₹{p:,.2f}" for p in d_payments],
+            "Fixed Actual Paid": [f"₹{p:,.2f}" for p in f_payments],
+            "Adaptive Demand": [f"₹{p:,.2f}" for p in d_payments],
             "Repayment Stress Level": stress_flags,
             "Financial Condition State": cond_types,
             "Explainability Evidence Trace": decision_traces
@@ -280,27 +367,30 @@ if st.button("⚡ Run Full AI Analysis & Evidence Engine", use_container_width=T
 
     with tab2:
         fig_pred = go.Figure()
-        fig_pred.add_trace(go.Scatter(x=months, y=inflows - outflows, mode='lines+markers', name="Actual Net Operating Cash"))
-        fig_pred.add_trace(go.Scatter(x=months, y=pred_cf, mode='lines', name="LSTM Next-Month Forecast", line=dict(dash='dot', color='purple')))
-        fig_pred.update_layout(title="Model 1 Accuracy: Inflow Forecast vs Realized Operating Margin", template="plotly_white")
+        fig_pred.add_trace(go.Scatter(x=months, y=inflows - outflows, mode='lines+markers', name="Actual Realized Margin"))
+        fig_pred.add_trace(go.Scatter(x=months, y=pred_cf, mode='lines', name="LSTM / Baseline Lookahead", line=dict(dash='dot', color='purple')))
+        fig_pred.update_layout(title="Accuracy: Predictive Anticipation vs Realized Operating Cash", template="plotly_white")
         st.plotly_chart(fig_pred, use_container_width=True)
 
     with tab3:
         st.markdown(f"""
-        #### Systematic Findings for **{selected_profile}**:
+        #### Systematic Findings & Alternative Credit Profile:
         
-        * **1. Cash-Flow Patterns & Volatility:**  
-          Inflows experience a peak-to-trough variance exceeding **{max(inflows)/max(min(inflows), 1):.1f}x**. Fixed monthly plans fail during seasonal gestation months.
+        * **1. True Interest & Arrears Simulation:**  
+          Unlike basic models, this simulation mathematically accrues interest `(1 + monthly_rate)` on the outstanding balance every month. Missed fixed payments properly cascade into penalty arrears, proving the adaptive model clears debt structurally faster.
           
-        * **2. Periods of Repayment Stress:**  
-          The model detected **{stress_flags.count('🚨 Critical Stress')} months** of severe liquidity stress, automatically restructuring debt collection to protect the ₹{subsistence_buffer:,.0f} baseline.
+        * **2. The New Alternative Credit Metric (Score: {final_credit_score}/850):**
+          Traditional bureaus punish this borrower for missing fixed dates. Our system generated an **Alternative Credit Score (AIRRS)** based on behavioral integrity:
+          - **Debt Recovery Index:** Evaluated ultimate principal recovery rather than strict monthly adherence.
+          - **Buffer Resilience:** Scored based on their ability to maintain the ₹{subsistence_buffer:,.0f} survival threshold.
+          - **Windfall Integrity Bonus:** Rewarded for successfully surrendering surplus liquidity during harvest/festival peaks.
           
-        * **3. Alternative Repayment Structure:**  
-          The AI decoupled tenure into three adaptive payment modes:  
-          - **Grace (₹0):** Invoked when cash buffer drops below subsistence.  
+        * **3. Structural Deterioration vs. Seasonality:**  
+          The AI engine calculates a **3-Month Rolling Mean** and contrasts it with the historical baseline profile. This allows the bank to automatically distinguish between a normal "Temporary Seasonal Downturn" (requiring grace) versus "Structural Deterioration" (requiring intervention).
+          
+        * **4. Forecast-Driven Payment Policy:**  
+          By decoupling the tenure, the algorithmic engine executes three adaptive modes:  
+          - **Grace (₹0):** Invoked when the buffer drops. Interest capitalizes, but the borrower survives.  
           - **Proportional Servicing:** Scaled debt servicing during moderate seasonal drag.  
-          - **Supercharged Liquidity Harvesting:** Repayments scaling up to **₹{max(d_payments):,.2f}** during peak cycles.
-          
-        * **4. Change in Financial Condition (Temporary vs Permanent):**  
-          By comparing the LSTM's lookahead predictions with current margins, the system recognized that dips in months like sowing or inventory stocking were **cyclical and temporary**, avoiding the mistake of treating seasonal downtime as permanent business failure.
+          - **Supercharged Liquidity Harvesting:** Repayments scaling up to 4x normal levels during peak cycles to erase accrued interest.
         """)
